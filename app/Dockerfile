@@ -1,1 +1,2 @@
-# Build instructions for the web application will be defined during implementation.
+FROM nginx:alpine
+COPY index.html styles.css products.js /usr/share/nginx/html/
