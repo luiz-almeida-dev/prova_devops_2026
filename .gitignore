@@ -8,6 +8,9 @@ secrets/
 .terraform/
 *.tfstate
 *.tfstate.*
+*.tfplan
+*.plan
+tfplan
 *.log
 *.tmp
 *.swp
