@@ -1,3 +1,155 @@
 ---
-# Deployment tasks will be defined during implementation.
-[]
+- name: Validate backend deployment secrets
+  hosts: api
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Require distinct MySQL passwords in dotenv-safe format
+      ansible.builtin.assert:
+        that:
+          - (mysql_password | default('')) is match('^[0-9a-f]{48}$')
+          - (mysql_root_password | default('')) is match('^[0-9a-f]{48}$')
+          - mysql_password != mysql_root_password
+      no_log: true
+
+- name: Prepare the application hosts
+  hosts: web:api
+  become: true
+  tasks:
+    - name: Install Docker and Compose v2
+      ansible.builtin.apt:
+        name:
+          - docker.io
+          - docker-compose-v2
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Enable and start Docker
+      ansible.builtin.service:
+        name: docker
+        enabled: true
+        state: started
+
+    - name: Grant the deployment user access to Docker
+      ansible.builtin.user:
+        name: "{{ ansible_user }}"
+        groups: docker
+        append: true
+
+    - name: Create the deployment directory
+      ansible.builtin.file:
+        path: /opt/prova-devops
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+- name: Deploy the web application
+  hosts: web
+  become: true
+  vars:
+    api_base_url: "http://{{ hostvars[groups['api'][0]].ansible_host }}:3000"
+  tasks:
+    - name: Copy web image files
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../app/{{ item }}"
+        dest: "/opt/prova-devops/{{ item }}"
+        owner: root
+        group: root
+        mode: "0644"
+      loop:
+        - Dockerfile
+        - styles.css
+        - products.js
+
+    - name: Deploy HTML with the API address
+      ansible.builtin.copy:
+        content: >-
+          {{ lookup('ansible.builtin.file', playbook_dir ~ '/../app/index.html', rstrip=false)
+             | regex_replace('<meta name="api-base-url" content="[^"]*">',
+                             '<meta name="api-base-url" content="' ~ api_base_url ~ '">') }}
+        dest: /opt/prova-devops/index.html
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Configure the web container
+      ansible.builtin.copy:
+        dest: /opt/prova-devops/compose.yaml
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          name: prova-devops-web
+          services:
+            web:
+              build: .
+              restart: unless-stopped
+              ports:
+                - "80:80"
+
+    - name: Converge the web container
+      ansible.builtin.include_tasks: converge_compose.yml
+      vars:
+        compose_files: [compose.yaml]
+        build_inputs: [Dockerfile, index.html, styles.css, products.js]
+
+- name: Deploy the API and MySQL
+  hosts: api
+  become: true
+  vars:
+    web_origin: "http://{{ hostvars[groups['web'][0]].ansible_host }}"
+  tasks:
+    - name: Copy API deployment files
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../api/{{ item }}"
+        dest: "/opt/prova-devops/{{ item }}"
+        owner: root
+        group: root
+        mode: "0644"
+      loop:
+        - .dockerignore
+        - Dockerfile
+        - docker-compose.yml
+        - init.sql
+        - package.json
+        - package-lock.json
+        - server.js
+
+    - name: Write protected Compose environment
+      ansible.builtin.copy:
+        dest: /opt/prova-devops/.env
+        owner: root
+        group: root
+        mode: "0600"
+        content: |
+          MYSQL_DATABASE=products
+          MYSQL_USER=products_app
+          MYSQL_PASSWORD={{ mysql_password }}
+          MYSQL_ROOT_PASSWORD={{ mysql_root_password }}
+          WEB_ORIGIN={{ web_origin }}
+          API_BIND_IP={{ ansible_host }}
+      no_log: true
+      diff: false
+
+    - name: Configure backend container restart policies
+      ansible.builtin.copy:
+        dest: /opt/prova-devops/compose.override.yaml
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          services:
+            api:
+              restart: unless-stopped
+            mysql:
+              image: mysql:8.4.0-oraclelinux8
+              restart: unless-stopped
+
+    - name: Converge API and MySQL
+      ansible.builtin.include_tasks: converge_compose.yml
+      vars:
+        compose_files: [docker-compose.yml, compose.override.yaml]
+        build_inputs: [.dockerignore, Dockerfile, package.json, package-lock.json, server.js]
+        compose_no_log: true

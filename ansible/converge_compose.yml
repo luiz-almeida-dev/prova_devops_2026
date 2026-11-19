@@ -1,0 +1,24 @@
+---
+- name: Apply Compose and rebuild only when image inputs change
+  ansible.builtin.shell: |
+    set -eu
+    checksums=$(sha256sum -- {{ build_inputs | map('quote') | join(' ') }})
+    fingerprint=$(printf '%s\n' "$checksums" | sha256sum)
+    set --
+    if [ ! -f .build-fingerprint ] || [ "$(cat .build-fingerprint)" != "$fingerprint" ]; then
+      set -- --build
+    fi
+    docker compose --ansi never{% for file in compose_files %} -f {{ file | quote }}{% endfor %} up --detach --wait "$@"
+    if [ "$#" -ne 0 ]; then
+      printf '%s\n' "$fingerprint" > .build-fingerprint
+      printf '%s\n' 'Build fingerprint updated'
+    fi
+  args:
+    chdir: /opt/prova-devops
+  environment:
+    COMPOSE_PROGRESS: plain
+  register: compose_result
+  changed_when: >-
+    'Build fingerprint updated' in compose_result.stdout or
+    (compose_result.stderr | regex_search('(?im)^.*Container .* (Created|Recreated|Started)\\s*$')) is not none
+  no_log: "{{ compose_no_log | default(false) }}"

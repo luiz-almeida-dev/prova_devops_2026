@@ -1,1 +1,11 @@
-# Add VM hosts after provisioning.
+[web]
+prova-devops-web ansible_host=192.168.122.150
+
+[api]
+prova-devops-api ansible_host=192.168.122.121
+
+[all:vars]
+ansible_user=aluno
+ansible_become=true
+ansible_ssh_private_key_file=~/.ssh/devops_lab
+ansible_ssh_common_args="-o StrictHostKeyChecking=yes -o IdentitiesOnly=yes -o PreferredAuthentications=publickey -o 'UserKnownHostsFile=\"{{ inventory_dir }}/known_hosts\"'"
